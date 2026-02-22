@@ -131,17 +131,25 @@ const checkAlerts = async () => {
         };
 
         if (isConditionMet(alert, currentPrice)) {
-          await notificationService.send(alert, result);
-          updateFields.status = 'triggered';
-          updateFields.triggeredAt = new Date();
+          const delivery = await notificationService.send(alert, result);
+          if (delivery?.delivered) {
+            updateFields.status = 'triggered';
+            updateFields.triggeredAt = new Date();
 
-          logger.info('Alert triggered', {
-            alertId: alert._id,
-            title: alert.title,
-            currentPrice,
-            targetPrice: alert.targetPrice,
-            condition: alert.condition,
-          });
+            logger.info('Alert triggered', {
+              alertId: alert._id,
+              title: alert.title,
+              currentPrice,
+              targetPrice: alert.targetPrice,
+              condition: alert.condition,
+            });
+          } else {
+            logger.warn('Alert condition met but notification not delivered', {
+              alertId: alert._id,
+              title: alert.title,
+              reason: delivery?.reason || 'unknown',
+            });
+          }
         }
 
         await PriceAlert.findByIdAndUpdate(alert._id, {

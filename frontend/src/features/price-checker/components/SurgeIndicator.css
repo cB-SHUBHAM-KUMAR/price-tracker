@@ -1,85 +1,110 @@
 .surge-indicator {
-  border-radius: 14px;
-  padding: 1.25rem;
-  border: 1.5px solid;
-  transition: all 0.3s ease;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+  background: color-mix(in srgb, var(--bg-card) 88%, transparent);
 }
 
 .surge-indicator--active {
-  background: rgba(239, 68, 68, 0.06);
-  border-color: rgba(239, 68, 68, 0.3);
+  border-color: color-mix(in srgb, var(--color-danger) 40%, transparent);
+  background: linear-gradient(150deg, color-mix(in srgb, var(--color-danger) 10%, transparent), transparent 58%);
 }
 
 .surge-indicator--safe {
-  background: rgba(34, 197, 94, 0.06);
-  border-color: rgba(34, 197, 94, 0.3);
+  border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+  background: linear-gradient(150deg, color-mix(in srgb, var(--color-success) 10%, transparent), transparent 58%);
 }
 
 .surge-indicator__header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-bottom: 0.8rem;
+  margin-bottom: 0.75rem;
 }
 
-.surge-indicator__icon { font-size: 1.2rem; }
+.surge-indicator__icon {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.surge-indicator--active .surge-indicator__icon {
+  color: var(--color-danger);
+}
+
+.surge-indicator--safe .surge-indicator__icon {
+  color: var(--color-success);
+}
 
 .surge-indicator__title {
-  font-size: 0.95rem;
-  font-weight: 600;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
 }
 
 .surge-indicator__bar-track {
   width: 100%;
-  height: 8px;
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 4px;
+  height: 0.45rem;
+  border-radius: var(--radius-full);
   overflow: hidden;
-  margin-bottom: 0.8rem;
+  background: color-mix(in srgb, var(--bg-input) 75%, transparent);
+  margin-bottom: 0.75rem;
 }
 
 .surge-indicator__bar-fill {
   height: 100%;
-  border-radius: 4px;
-  transition: width 1s ease-out;
+  border-radius: inherit;
+  transition: width 0.7s ease;
   background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444);
 }
 
 .surge-indicator__details {
-  display: flex;
-  gap: 1rem;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
 }
 
 .surge-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.5rem;
+  background: color-mix(in srgb, var(--bg-input) 90%, transparent);
+  display: grid;
+  gap: 0.25rem;
 }
 
 .surge-detail__label {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   text-transform: uppercase;
-  color: var(--color-text-muted);
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 700;
 }
 
 .surge-detail__value {
+  font-size: var(--text-sm);
   font-weight: 700;
-  font-size: 0.95rem;
+  color: var(--text-primary);
 }
 
 .surge-detail__badge {
-  font-size: 0.75rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 6px;
-  font-weight: 600;
+  width: fit-content;
+  font-size: 0.68rem;
   text-transform: capitalize;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.4rem;
+  font-weight: 700;
 }
 
-.surge-detail__badge--none { background: #dcfce7; color: #166534; }
-.surge-detail__badge--low { background: #fef9c3; color: #854d0e; }
-.surge-detail__badge--moderate { background: #fed7aa; color: #9a3412; }
-.surge-detail__badge--high { background: #fecaca; color: #991b1b; }
-.surge-detail__badge--extreme { background: #ef4444; color: #fff; }
+.surge-detail__badge--none { background: rgba(34, 197, 94, 0.18); color: #22c55e; }
+.surge-detail__badge--low { background: rgba(34, 197, 94, 0.18); color: #22c55e; }
+.surge-detail__badge--moderate { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+.surge-detail__badge--high { background: rgba(249, 115, 22, 0.2); color: #f97316; }
+.surge-detail__badge--extreme { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+
+@media (max-width: 640px) {
+  .surge-indicator__details {
+    grid-template-columns: 1fr;
+  }
+}

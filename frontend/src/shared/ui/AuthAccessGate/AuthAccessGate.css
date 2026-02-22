@@ -1,0 +1,77 @@
+.auth-access-gate {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(150deg, color-mix(in srgb, var(--accent-primary) 10%, transparent), transparent 54%),
+    var(--bg-card);
+  box-shadow: var(--shadow-elevated);
+  padding: clamp(var(--space-lg), 3vw, var(--space-2xl));
+}
+
+.auth-access-gate__eyebrow {
+  margin: 0;
+  display: inline-block;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.auth-access-gate__title {
+  margin: var(--space-sm) 0 0;
+  color: var(--text-primary);
+  font-size: clamp(1.4rem, 2.6vw, 2rem);
+  line-height: 1.15;
+}
+
+.auth-access-gate__description {
+  margin: var(--space-sm) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.6;
+  max-width: 62ch;
+}
+
+.auth-access-gate__actions {
+  margin-top: var(--space-lg);
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.auth-access-gate__btn {
+  min-width: 128px;
+  height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  border: 1px solid var(--border-medium);
+  transition: all var(--transition-fast);
+}
+
+.auth-access-gate__btn--primary {
+  color: var(--bg-primary);
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.auth-access-gate__btn--primary:hover {
+  opacity: 0.9;
+}
+
+.auth-access-gate__btn--secondary {
+  color: var(--text-primary);
+  background: var(--bg-card);
+}
+
+.auth-access-gate__btn--secondary:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-card-hover);
+}

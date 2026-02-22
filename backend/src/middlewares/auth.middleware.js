@@ -29,6 +29,29 @@ const authenticate = asyncHandler(async (req, _res, next) => {
 });
 
 /**
+ * Attaches req.user if a valid Bearer token is present.
+ * Does not fail the request when token is missing or invalid.
+ */
+const attachUserIfPresent = asyncHandler(async (req, _res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    next();
+    return;
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  try {
+    const decoded = jwt.verify(token, config.jwt.secret);
+    req.user = decoded;
+  } catch {
+    // Intentionally ignore invalid token to keep route public.
+  }
+
+  next();
+});
+
+/**
  * Restricts access to specific roles.
  * @param  {...string} roles - Allowed roles
  */
@@ -41,4 +64,4 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { authenticate, authorize };
+module.exports = { authenticate, attachUserIfPresent, authorize };

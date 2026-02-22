@@ -4,7 +4,6 @@
  */
 
 const logger = require('../config/logger.config');
-const { AppError } = require('../errors');
 
 // eslint-disable-next-line no-unused-vars
 const globalErrorHandler = (err, req, res, _next) => {

@@ -52,9 +52,15 @@ function PriceForm({ onSubmit, loading }) {
       if (data.image) setScrapedImage(data.image);
       if (data.platform) setScrapedPlatform(data.platform);
 
-      // If price couldn't be scraped (URL-only extraction), prompt user
-      if (!data.price && data.urlExtracted) {
-        setScrapeError('Product identified! Please enter the price manually below.');
+      // Show precise extraction notes when price is unavailable.
+      if (!data.price) {
+        if (data.extractionNote) {
+          setScrapeError(data.extractionNote);
+        } else if (data.unavailable) {
+          setScrapeError('This item appears unavailable or out of stock. Please enter a price manually.');
+        } else if (data.urlExtracted) {
+          setScrapeError('Product identified! Please enter the price manually below.');
+        }
       }
     } catch (err) {
       setScrapeError(err.response?.data?.message || 'Failed to extract product data. Try entering details manually.');

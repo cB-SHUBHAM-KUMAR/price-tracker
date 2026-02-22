@@ -50,9 +50,13 @@ userSchema.index({ role: 1, status: 1 });
 
 // ─── Pre-save hook — hash password ──────────────────────────────────────────
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password')) {
+    next();
+    return;
+  }
   this.password = await bcrypt.hash(this.password, 12);
   next();
+  return;
 });
 
 // ─── Instance methods ────────────────────────────────────────────────────────

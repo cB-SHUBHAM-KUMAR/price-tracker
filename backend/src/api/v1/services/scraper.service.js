@@ -1,345 +1,756 @@
 /**
- * @fileoverview URL Scraper Service — extracts product info (title, price,
- * brand, category, image) from e-commerce URLs.
+ * URL scraper service for product metadata extraction.
  *
- * Strategy:
- * 1. Attempt direct HTTP fetch (works for many sites)
- * 2. Parse HTML with cheerio for known selectors + JSON-LD + OG tags
- * 3. If extraction fails, use OpenAI to intelligently parse whatever
- *    content we got (partial HTML, page titles, URL patterns)
- *
- * Supported platforms: Amazon.in, Flipkart, Myntra + generic fallback
+ * Pipeline:
+ * 1. Try multiple direct HTTP fetch strategies.
+ * 2. Parse with platform-aware selectors and score candidates.
+ * 3. Optionally parse text mirror fallback.
+ * 4. AI fallback: OpenAI -> Gemini.
+ * 5. URL-pattern fallback as last resort.
  */
 
 const axios = require('axios');
 const cheerio = require('cheerio');
 const logger = require('../../../config/logger.config');
 
-// ─── HTTP fetch with browser-like headers ────────────────────────────────────
-const fetchHTML = async (url) => {
-  // Try multiple user-agent strategies
-  const strategies = [
-    {
-      // Google bot UA — many sites serve full content to Googlebot
+const REQUEST_TIMEOUT_MS = 12000;
+const AI_TIMEOUT_MS = 15000;
+const MIRROR_TIMEOUT_MS = 12000;
+
+const PLATFORM_LABELS = {
+  amazon: 'Amazon',
+  flipkart: 'Flipkart',
+  myntra: 'Myntra',
+  generic: 'Web',
+};
+
+const FETCH_STRATEGIES = [
+  {
+    name: 'googlebot',
+    headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    },
-    {
-      // Standard browser UA
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate',
+    },
+  },
+  {
+    name: 'desktop-chrome',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Upgrade-Insecure-Requests': '1',
       'Sec-Fetch-Dest': 'document',
       'Sec-Fetch-Mode': 'navigate',
       'Sec-Fetch-Site': 'none',
       'Sec-Fetch-User': '?1',
-      'Upgrade-Insecure-Requests': '1',
     },
-    {
-      // Curl-like UA — sometimes simpler is better
-      'User-Agent': 'curl/7.88.1',
-      'Accept': '*/*',
+  },
+  {
+    name: 'mobile-safari',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
     },
+  },
+  {
+    name: 'curl',
+    headers: {
+      'User-Agent': 'curl/8.5.0',
+      Accept: '*/*',
+    },
+  },
+];
+
+const BLOCK_PATTERNS = [
+  'recaptcha',
+  'captcha',
+  'access denied',
+  'forbidden',
+  'bot verification',
+  'automated access to amazon data',
+  'enter the characters you see below',
+  'flipkart recaptcha',
+];
+
+const UNAVAILABLE_PATTERNS = [
+  'currently unavailable',
+  "we don't know when or if this item will be back in stock",
+  'temporarily out of stock',
+  'out of stock',
+  'unavailable',
+  'sold out',
+];
+
+const JUNK_TITLE_PATTERNS = [
+  'page not found',
+  '404',
+  'access denied',
+  'recaptcha',
+  'captcha',
+  'forbidden',
+  'robot check',
+  'error',
+  'unavailable',
+];
+
+const BRAND_HINTS = [
+  'apple', 'samsung', 'sony', 'lg', 'hp', 'dell', 'asus', 'lenovo', 'oneplus', 'xiaomi', 'redmi',
+  'poco', 'realme', 'oppo', 'vivo', 'nokia', 'motorola', 'google', 'pixel', 'titan', 'casio',
+  'fossil', 'nike', 'adidas', 'puma', 'reebok', 'levis', 'zara', 'boat', 'jbl', 'bose', 'philips',
+  'panasonic', 'whirlpool', 'bosch', 'bajaj', 'prestige', 'havells', 'crompton',
+];
+
+const safeText = (value) => (value == null ? '' : String(value).trim());
+
+const normalizeWhitespace = (value) => safeText(value).replace(/\s+/g, ' ');
+
+const getPlatformLabel = (platform) => PLATFORM_LABELS[platform] || 'Web';
+
+const detectPlatform = (url) => {
+  const lower = safeText(url).toLowerCase();
+  if (lower.includes('amazon.in') || lower.includes('amazon.com')) return 'amazon';
+  if (lower.includes('flipkart.com')) return 'flipkart';
+  if (lower.includes('myntra.com')) return 'myntra';
+  return 'generic';
+};
+
+const cleanPrice = (priceText) => {
+  if (priceText == null) return null;
+
+  const normalized = safeText(priceText)
+    .replace(/[\u00A0\s]+/g, ' ')
+    .replace(/,/g, '')
+    .replace(/(INR|USD|EUR|GBP|Rs\.?|MRP|M\.R\.P\.|Our Price|Deal Price|Price)/gi, ' ');
+
+  const matches = normalized.match(/\d{1,9}(?:\.\d{1,2})?/g);
+  if (!matches || !matches.length) return null;
+
+  for (const token of matches) {
+    const parsed = Number.parseFloat(token);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+};
+
+const detectCurrency = (priceText, url) => {
+  const source = `${safeText(priceText)} ${safeText(url)}`.toLowerCase();
+
+  if (/₹|\u20b9|\binr\b|\brs\.?\b/i.test(source)) return 'INR';
+  if (/€|\u20ac|\beur\b/i.test(source)) return 'EUR';
+  if (/£|\u00a3|\bgbp\b/i.test(source)) return 'GBP';
+  if (/\$|\busd\b/i.test(source)) return 'USD';
+
+  return source.includes('.in') ? 'INR' : 'USD';
+};
+
+const detectCategory = (title, rawCategory) => {
+  const text = `${safeText(title)} ${safeText(rawCategory)}`.toLowerCase();
+  const categoryMap = {
+    electronics: [
+      'phone', 'laptop', 'tablet', 'headphone', 'earphone', 'earbud', 'speaker', 'tv', 'television',
+      'camera', 'watch', 'smartwatch', 'charger', 'monitor', 'keyboard', 'mouse', 'console', 'gaming',
+      'iphone', 'samsung', 'pixel', 'macbook', 'ipad', 'airpod', 'kindle',
+    ],
+    fashion: [
+      'shirt', 'jeans', 'dress', 'shoes', 'sneaker', 'jacket', 'hoodie', 'kurta', 'saree', 'lehenga',
+      't-shirt', 'trouser', 'skirt', 'blazer', 'sandal', 'heel', 'boot', 'slipper',
+    ],
+    beauty: [
+      'lipstick', 'foundation', 'cream', 'serum', 'shampoo', 'conditioner', 'perfume', 'fragrance',
+      'sunscreen', 'moisturizer', 'makeup', 'mascara', 'concealer',
+    ],
+    home: [
+      'sofa', 'table', 'chair', 'bed', 'mattress', 'pillow', 'curtain', 'lamp', 'rug', 'kitchen',
+      'mixer', 'blender', 'appliance', 'vacuum',
+    ],
+    sports: ['cricket', 'football', 'badminton', 'yoga', 'gym', 'fitness', 'running', 'cycling', 'dumbbell', 'treadmill'],
+    books: ['book', 'novel', 'hardcover', 'paperback', 'kindle edition'],
+    grocery: ['grocery', 'snack', 'tea', 'coffee', 'oil', 'rice', 'flour'],
+    toys: ['toy', 'lego', 'puzzle', 'board game', 'doll'],
+  };
+
+  for (const [category, keywords] of Object.entries(categoryMap)) {
+    if (keywords.some((keyword) => text.includes(keyword))) {
+      return category;
+    }
+  }
+
+  return safeText(rawCategory);
+};
+
+const isJunkTitle = (title) => {
+  const lower = safeText(title).toLowerCase();
+  if (!lower) return true;
+  return JUNK_TITLE_PATTERNS.some((pattern) => lower.includes(pattern));
+};
+
+const isLikelyUnavailable = (text) => {
+  const lower = safeText(text).toLowerCase();
+  if (!lower) return false;
+  return UNAVAILABLE_PATTERNS.some((pattern) => lower.includes(pattern));
+};
+
+const isLikelyBlockedPage = (html, status) => {
+  if (!safeText(html)) return true;
+
+  if (status === 403 || status === 429) return true;
+
+  const lower = html.toLowerCase();
+  return BLOCK_PATTERNS.some((pattern) => lower.includes(pattern));
+};
+
+const firstText = ($, selectors = []) => {
+  for (const selector of selectors) {
+    const text = normalizeWhitespace($(selector).first().text());
+    if (text) return text;
+  }
+  return '';
+};
+
+const firstAttr = ($, selectors = [], attr = 'content') => {
+  for (const selector of selectors) {
+    const value = normalizeWhitespace($(selector).first().attr(attr));
+    if (value) return value;
+  }
+  return '';
+};
+
+const parseJsonMaybe = (raw) => {
+  if (!safeText(raw)) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const walkProductNode = (node) => {
+  if (!node) return null;
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = walkProductNode(item);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  if (typeof node !== 'object') return null;
+
+  const type = safeText(node['@type']).toLowerCase();
+  if (type === 'product' || safeText(node.name)) {
+    return node;
+  }
+
+  if (node['@graph']) return walkProductNode(node['@graph']);
+
+  for (const value of Object.values(node)) {
+    if (typeof value === 'object') {
+      const found = walkProductNode(value);
+      if (found) return found;
+    }
+  }
+
+  return null;
+};
+
+const extractFromJsonLd = ($) => {
+  let title = '';
+  let brand = '';
+  let category = '';
+  let image = '';
+  let rating = '';
+  let priceText = '';
+
+  $('script[type="application/ld+json"]').each((_, script) => {
+    if (title && priceText && brand && image) return;
+
+    const raw = $(script).html();
+    const parsed = parseJsonMaybe(raw);
+    if (!parsed) return;
+
+    const product = walkProductNode(parsed);
+    if (!product) return;
+
+    title = title || safeText(product.name);
+
+    const brandValue = typeof product.brand === 'string'
+      ? product.brand
+      : product.brand && typeof product.brand === 'object'
+        ? product.brand.name
+        : '';
+    brand = brand || safeText(brandValue);
+
+    const imageValue = Array.isArray(product.image) ? product.image[0] : product.image;
+    image = image || safeText(imageValue);
+    category = category || safeText(product.category);
+
+    const offers = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+    if (offers && typeof offers === 'object') {
+      priceText = priceText || safeText(offers.price || offers.lowPrice || offers.highPrice || offers.priceSpecification?.price);
+    }
+
+    if (product.aggregateRating && typeof product.aggregateRating === 'object') {
+      const value = safeText(product.aggregateRating.ratingValue);
+      rating = rating || (value ? `${value}/5` : '');
+    }
+  });
+
+  return { title, brand, category, image, rating, priceText };
+};
+
+const extractAmazonPriceText = ($, rawHTML) => {
+  const selectorPrice = firstText($, [
+    '#tp_price_block_total_price_ww .a-offscreen',
+    '#corePrice_feature_div .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .a-price .a-offscreen',
+    '#priceblock_ourprice',
+    '#priceblock_dealprice',
+    '#priceblock_saleprice',
+    '#buybox .a-price .a-offscreen',
+    '#attach-base-product-price',
+  ]);
+
+  if (selectorPrice) return selectorPrice;
+
+  const valuePrice = firstAttr($, ['#attach-base-product-price', 'input[name="offeringID.1"]'], 'value');
+  if (valuePrice) return valuePrice;
+
+  const regexes = [
+    /id="tp_price_block_total_price_ww"[\s\S]{0,4000}?a-offscreen">([^<]+)/i,
+    /"displayPrice"\s*:\s*"([^"]+)"/i,
+    /"priceToPay"\s*:\s*\{[^}]*"amount"\s*:\s*([0-9.]+)/i,
   ];
 
-  for (const headers of strategies) {
+  for (const pattern of regexes) {
+    const match = rawHTML.match(pattern);
+    if (match && safeText(match[1])) return safeText(match[1]);
+  }
+
+  return '';
+};
+
+const extractFlipkartPriceText = ($, rawHTML) => {
+  const selectorPrice = firstText($, [
+    'div.Nx9bqj.CxhGGd',
+    'div._30jeq3._16Jk6d',
+    'div.Nx9bqj',
+    'div._30jeq3',
+    'span[data-testid="price"]',
+    '[class*="price"] [class*="Nx9bqj"]',
+  ]);
+
+  if (selectorPrice) return selectorPrice;
+
+  const match = rawHTML.match(/"sellingPrice"\s*:\s*\{[^}]*"amount"\s*:\s*([0-9.]+)/i);
+  return match ? safeText(match[1]) : '';
+};
+
+const extractMyntraPriceText = ($, rawHTML) => {
+  const selectorPrice = firstText($, [
+    'span.pdp-price strong',
+    '.pdp-discount-container .pdp-price strong',
+    '[class*="pdp-price"] strong',
+    '[class*="price"] [class*="discounted"]',
+  ]);
+
+  if (selectorPrice) return selectorPrice;
+
+  const match = rawHTML.match(/"discountedPrice"\s*:\s*([0-9.]+)/i);
+  return match ? safeText(match[1]) : '';
+};
+
+const extractGenericPriceText = ($, rawHTML) => {
+  const selectorPrice = firstText($, [
+    'meta[property="product:price:amount"]',
+    'meta[itemprop="price"]',
+    '[itemprop="price"]',
+    '.price',
+    '[class*="price"]',
+  ]);
+
+  if (selectorPrice) return selectorPrice;
+
+  const match = rawHTML.match(/(?:₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)\s?[0-9][0-9,]*(?:\.[0-9]{1,2})?/i);
+  return match ? safeText(match[0]) : '';
+};
+
+const extractAvailabilityText = ($, rawHTML) => {
+  const fromSelectors = firstText($, [
+    '#availability',
+    '#availabilityInsideBuyBox_feature_div',
+    '#outOfStock',
+    '.delivery-message',
+  ]);
+
+  if (fromSelectors) return fromSelectors;
+
+  const lower = rawHTML.toLowerCase();
+  for (const pattern of UNAVAILABLE_PATTERNS) {
+    if (lower.includes(pattern)) return pattern;
+  }
+
+  return '';
+};
+
+const normalizeBrand = (brand) =>
+  safeText(brand)
+    .replace(/visit the\s+/gi, '')
+    .replace(/\s+store$/i, '')
+    .replace(/^brand:\s*/i, '')
+    .trim();
+
+const extractFromHTML = ($, platform, rawHTML, url) => {
+  const jsonLd = extractFromJsonLd($);
+
+  let title = jsonLd.title || firstText($, ['#productTitle', 'h1', 'meta[property="og:title"]', 'title']);
+  if (!title) {
+    title = firstAttr($, ['meta[property="og:title"]', 'meta[name="title"]'], 'content');
+  }
+
+  let brand = normalizeBrand(
+    jsonLd.brand || firstText($, ['#bylineInfo', '[itemprop="brand"]', '.brand', 'h1.pdp-title'])
+  );
+
+  let category = safeText(jsonLd.category);
+  let image = jsonLd.image || firstAttr($, ['#landingImage', '#imgTagWrapperId img', 'meta[property="og:image"]'], 'src');
+  if (!image) {
+    image = firstAttr($, ['meta[property="og:image"]', 'meta[name="twitter:image"]'], 'content');
+  }
+
+  let rating = safeText(jsonLd.rating);
+  let priceText = safeText(jsonLd.priceText);
+
+  if (platform === 'amazon') {
+    title = title || firstAttr($, ['meta[name="title"]', 'meta[property="og:title"]'], 'content');
+    brand = normalizeBrand(brand || firstText($, ['#bylineInfo']));
+
+    const crumbs = [];
+    $('#wayfinding-breadcrumbs_feature_div li a, #wayfinding-breadcrumbs_container li a').each((_, el) => {
+      const text = normalizeWhitespace($(el).text());
+      if (text) crumbs.push(text);
+    });
+    category = category || (crumbs.length ? crumbs[crumbs.length - 1] : '');
+
+    priceText = priceText || extractAmazonPriceText($, rawHTML);
+  }
+
+  if (platform === 'flipkart') {
+    title = title || firstText($, ['span.VU-ZEz', 'span.B_NuCI', 'h1.yhB1nd span', 'h1._9E25nV']);
+    brand = normalizeBrand(brand || firstText($, ['span.mEh187', 'span.G6XhRU']));
+    image = image || firstAttr($, ['img._396cs4', 'img.DByuf4', 'meta[property="og:image"]'], 'src');
+    priceText = priceText || extractFlipkartPriceText($, rawHTML);
+  }
+
+  if (platform === 'myntra') {
+    title = title || firstText($, ['h1.pdp-name', 'h1.pdp-title']);
+    brand = normalizeBrand(brand || firstText($, ['h1.pdp-title']));
+    category = category || 'fashion';
+    priceText = priceText || extractMyntraPriceText($, rawHTML);
+  }
+
+  if (platform === 'generic') {
+    priceText = priceText || extractGenericPriceText($, rawHTML);
+  }
+
+  const availabilityText = extractAvailabilityText($, rawHTML);
+  const unavailable = isLikelyUnavailable(availabilityText || rawHTML);
+  const price = cleanPrice(priceText) || 0;
+
+  if (!category) {
+    category = detectCategory(title, category);
+  }
+
+  if (!rating) {
+    rating = firstText($, ['[data-hook="rating-out-of-text"]', '.a-icon-alt', '[itemprop="ratingValue"]']);
+  }
+
+  return {
+    title: normalizeWhitespace(title),
+    price,
+    priceText: normalizeWhitespace(priceText),
+    currency: detectCurrency(priceText, url),
+    brand,
+    category,
+    image: safeText(image),
+    rating: normalizeWhitespace(rating),
+    unavailable,
+    availabilityText: normalizeWhitespace(availabilityText),
+  };
+};
+
+const scoreExtraction = (extracted, candidate) => {
+  let score = 0;
+
+  if (!isJunkTitle(extracted.title)) score += 24;
+  if (extracted.brand) score += 8;
+  if (extracted.category) score += 6;
+  if (extracted.image) score += 10;
+  if (extracted.price > 0) score += 42;
+  if (extracted.unavailable) score += 16;
+
+  if (candidate.likelyBlocked) score -= 10;
+  if (candidate.status >= 400) score -= 8;
+
+  return score;
+};
+
+const fetchHTMLCandidates = async (url) => {
+  const candidates = [];
+
+  for (const strategy of FETCH_STRATEGIES) {
     try {
       const response = await axios.get(url, {
-        headers,
-        timeout: 12000,
+        headers: strategy.headers,
+        timeout: REQUEST_TIMEOUT_MS,
         maxRedirects: 5,
         validateStatus: (status) => status < 500,
       });
 
-      // Check if we got usable content (not a captcha page)
       const html = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-      const isCaptcha = html.toLowerCase().includes('captcha') || html.toLowerCase().includes('robot');
-      const isBlocked = response.status === 403 || response.status === 429;
+      const length = safeText(html).length;
+      const likelyBlocked = isLikelyBlockedPage(html, response.status);
 
-      if (!isBlocked && !isCaptcha && html.length > 1000) {
-        logger.info('HTML fetch successful', { strategy: headers['User-Agent'].substring(0, 30), length: html.length });
-        return html;
+      if (length > 120) {
+        candidates.push({
+          html,
+          status: response.status,
+          strategy: strategy.name,
+          likelyBlocked,
+        });
       }
 
-      logger.warn('Strategy returned blocked/captcha content', { strategy: headers['User-Agent'].substring(0, 30), status: response.status });
+      logger.info('Scraper fetch attempt completed', {
+        strategy: strategy.name,
+        status: response.status,
+        length,
+        likelyBlocked,
+      });
+
+      // Stop early if we already have a strong candidate.
+      if (!likelyBlocked && length > 50000) {
+        break;
+      }
     } catch (error) {
-      logger.warn('Strategy failed', { strategy: headers['User-Agent'].substring(0, 30), error: error.message });
+      logger.warn('Scraper fetch attempt failed', {
+        strategy: strategy.name,
+        error: error.message,
+      });
     }
   }
 
-  // All strategies failed — return null, we'll use OpenAI with just the URL
-  return null;
+  return candidates;
 };
 
-/**
- * Detects which e-commerce platform a URL belongs to.
- */
-const detectPlatform = (url) => {
-  const u = url.toLowerCase();
-  if (u.includes('amazon.in') || u.includes('amazon.com')) return 'amazon';
-  if (u.includes('flipkart.com')) return 'flipkart';
-  if (u.includes('myntra.com')) return 'myntra';
-  return 'generic';
+const fetchViaJinaMirror = async (url) => {
+  const mirrorURL = `https://r.jina.ai/http://${url.replace(/^https?:\/\//i, '')}`;
+
+  try {
+    const response = await axios.get(mirrorURL, {
+      timeout: MIRROR_TIMEOUT_MS,
+      validateStatus: (status) => status < 500,
+    });
+
+    const text = typeof response.data === 'string' ? response.data : '';
+    if (text.length < 120) return null;
+
+    logger.info('Jina mirror fetch completed', {
+      status: response.status,
+      length: text.length,
+    });
+
+    return text;
+  } catch (error) {
+    logger.warn('Jina mirror fetch failed', { error: error.message });
+    return null;
+  }
 };
 
-// ─── HTML-based extraction (for when fetch succeeds) ─────────────────────────
-const extractFromHTML = ($, platform) => {
-  let title = '', priceText = '', brand = '', category = '', image = '', rating = '';
+const extractFromMirror = (mirrorText, platform, url) => {
+  const titleLine = mirrorText.match(/^Title:\s*(.+)$/m);
+  const imageMatch = mirrorText.match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/i);
+  const priceMatch = mirrorText.match(/(?:₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)\s?[0-9][0-9,]*(?:\.[0-9]{1,2})?/i);
 
-  // ─── JSON-LD (most reliable, works across all sites) ────────────
-  $('script[type="application/ld+json"]').each((_, el) => {
-    try {
-      let data = JSON.parse($(el).html());
-      // Handle @graph arrays
-      if (data['@graph']) data = data['@graph'].find((d) => d['@type'] === 'Product') || data;
-      if (data['@type'] === 'Product' || data.name) {
-        title = title || data.name || '';
-        brand = brand || data.brand?.name || (typeof data.brand === 'string' ? data.brand : '') || '';
-        image = image || (Array.isArray(data.image) ? data.image[0] : data.image) || '';
-        if (data.offers) {
-          const offer = Array.isArray(data.offers) ? data.offers[0] : data.offers;
-          priceText = priceText || offer.price?.toString() || offer.lowPrice?.toString() || '';
-        }
-        category = category || data.category || '';
-        if (data.aggregateRating) {
-          rating = `${data.aggregateRating.ratingValue}/5`;
-        }
-      }
-    } catch { /* ignore parse errors */ }
-  });
+  const title = titleLine ? normalizeWhitespace(titleLine[1]) : '';
+  const priceText = priceMatch ? safeText(priceMatch[0]) : '';
+  const availabilityText = mirrorText.match(/currently unavailable|out of stock|temporarily out of stock/i)?.[0] || '';
 
-  // ─── OG Tags (fallback) ─────────────────────────────────────────
-  if (!title) title = $('meta[property="og:title"]').attr('content') || $('title').text().trim() || '';
-  if (!image) image = $('meta[property="og:image"]').attr('content') || '';
-  if (!priceText) priceText = $('meta[property="product:price:amount"]').attr('content') || '';
-
-  // ─── Platform-specific selectors ────────────────────────────────
-  if (platform === 'amazon') {
-    if (!title) title = $('#productTitle').text().trim();
-    if (!priceText) priceText = $('span.a-price-whole').first().text().trim() || $('span.a-offscreen').first().text().trim();
-    if (!brand) brand = $('#bylineInfo').text().replace(/Visit the |Store|Brand:/gi, '').trim();
-    if (!image) image = $('#landingImage').attr('src') || '';
-    const breadcrumbs = [];
-    $('#wayfinding-breadcrumbs_container li span.a-list-item a').each((_, el) => breadcrumbs.push($(el).text().trim()));
-    if (!category) category = breadcrumbs[breadcrumbs.length - 1] || '';
-  }
-
-  if (platform === 'flipkart') {
-    if (!title) title = $('span.VU-ZEz, span.B_NuCI, h1.yhB1nd span, h1._9E25nV').first().text().trim();
-    if (!priceText) priceText = $('div.Nx9bqj.CxhGGd, div._30jeq3._16Jk6d, div.Nx9bqj, div._30jeq3').first().text().trim();
-    if (!brand) brand = $('span.mEh187, span.G6XhRU').first().text().trim();
-    if (!image) image = $('img._396cs4, img.DByuf4').first().attr('src') || '';
-  }
-
-  if (platform === 'myntra') {
-    if (!title) title = $('h1.pdp-title, h1.pdp-name').first().text().trim();
-    if (!brand) brand = $('h1.pdp-title').first().text().trim();
-    if (!priceText) priceText = $('span.pdp-price strong').first().text().trim();
-    if (!category) category = 'fashion';
-  }
-
-  return { title, priceText, brand, category, image, rating };
+  return {
+    title,
+    price: cleanPrice(priceText) || 0,
+    priceText,
+    currency: detectCurrency(priceText, url),
+    brand: '',
+    category: detectCategory(title, ''),
+    image: imageMatch ? safeText(imageMatch[1]) : '',
+    rating: '',
+    unavailable: isLikelyUnavailable(availabilityText || mirrorText),
+    availabilityText,
+    platform: getPlatformLabel(platform),
+  };
 };
 
-// ─── OpenAI Extraction (when HTML fails / is blocked) ────────────────────────
-const extractWithOpenAI = async (url, partialHTML = '') => {
+const makeProviderError = (provider, error) => {
+  const status = error?.response?.status;
+  const providerPrefix = provider === 'openai' ? 'OpenAI' : 'Gemini';
+
+  if (status === 429) {
+    return `${providerPrefix} rate limit or quota exceeded`;
+  }
+
+  if (status === 401 || status === 403) {
+    return `${providerPrefix} authentication failed`;
+  }
+
+  return `${providerPrefix} extraction failed`;
+};
+
+const buildAIContext = (url, extraction, partialHTML = '') => {
+  const lines = [`URL: ${url}`];
+
+  if (extraction) {
+    if (extraction.title) lines.push(`Detected title: ${extraction.title}`);
+    if (extraction.brand) lines.push(`Detected brand: ${extraction.brand}`);
+    if (extraction.category) lines.push(`Detected category: ${extraction.category}`);
+    if (extraction.availabilityText) lines.push(`Availability note: ${extraction.availabilityText}`);
+  }
+
+  if (partialHTML) {
+    const $ = cheerio.load(partialHTML);
+    const pageTitle = normalizeWhitespace($('title').text());
+    const ogTitle = safeText($('meta[property="og:title"]').attr('content'));
+    const ogDesc = safeText($('meta[property="og:description"]').attr('content'));
+    const h1 = normalizeWhitespace($('h1').first().text());
+
+    if (pageTitle) lines.push(`Page title: ${pageTitle}`);
+    if (ogTitle) lines.push(`OG title: ${ogTitle}`);
+    if (ogDesc) lines.push(`OG description: ${ogDesc}`);
+    if (h1) lines.push(`H1: ${h1}`);
+
+    const priceHints = [];
+    const priceRegex = /(?:₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)\s?[0-9][0-9,]*(?:\.[0-9]{1,2})?/gi;
+    let match;
+    while ((match = priceRegex.exec(partialHTML)) && priceHints.length < 6) {
+      priceHints.push(match[0]);
+    }
+    if (priceHints.length) {
+      lines.push(`Observed price-like values: ${Array.from(new Set(priceHints)).join(', ')}`);
+    }
+  }
+
+  lines.push('Important: If price is not explicitly present, return price as null. Do not guess a price.');
+
+  return lines.join('\n');
+};
+
+const extractWithOpenAI = async (url, partialHTML = '', extraction = null) => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error('Could not scrape the page and OpenAI is not configured. Please enter details manually.');
+    throw new Error('OpenAI key not configured');
   }
 
-  // Build context from whatever we have
-  let context = `URL: ${url}\n`;
-  if (partialHTML) {
-    // Extract useful text from partial HTML (title, meta tags, any visible text)
-    const $ = cheerio.load(partialHTML);
-    const pageTitle = $('title').text().trim();
-    const ogTitle = $('meta[property="og:title"]').attr('content') || '';
-    const ogDesc = $('meta[property="og:description"]').attr('content') || '';
-    const ogImage = $('meta[property="og:image"]').attr('content') || '';
-    const h1 = $('h1').first().text().trim();
+  const context = buildAIContext(url, extraction, partialHTML);
 
-    context += `Page Title: ${pageTitle}\n`;
-    if (ogTitle) context += `OG Title: ${ogTitle}\n`;
-    if (ogDesc) context += `OG Description: ${ogDesc}\n`;
-    if (ogImage) context += `OG Image: ${ogImage}\n`;
-    if (h1) context += `H1: ${h1}\n`;
-  }
-
-  logger.info('Using OpenAI for URL extraction', { url });
-
-  try {
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: `You are a product data extraction assistant. Given a URL and optional page metadata, extract product information. You must respond with ONLY valid JSON, no markdown.
-
-Response format:
-{"title":"product name","price":number_or_null,"currency":"INR","brand":"brand name","category":"electronics|fashion|beauty|home|sports|books|grocery|toys","image":"image_url_or_empty","platform":"site name"}
-
-Rules:
-- Infer product info from the URL structure (e.g. /apple-iphone-15-blue-128-gb/ tells you it's an Apple iPhone 15 Blue 128GB)
-- price should be a number (no symbols), or null if unknown
-- currency defaults to INR for .in domains, USD for .com
-- Infer brand and category from the product name
-- platform should be the website name (Amazon, Flipkart, Myntra, etc.)
-- For image, use the OG image if available, otherwise empty string`,
-          },
-          {
-            role: 'user',
-            content: context,
-          },
-        ],
-        temperature: 0.1,
-        max_tokens: 300,
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
+  const response = await axios.post(
+    'https://api.openai.com/v1/chat/completions',
+    {
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You extract product fields from URL and page hints.',
+            'Return only JSON without markdown.',
+            'Schema:',
+            '{"title":"string","price":number_or_null,"currency":"INR|USD|EUR|GBP","brand":"string","category":"electronics|fashion|beauty|home|sports|books|grocery|toys|","image":"string","platform":"string"}',
+            'Never invent a price if the page does not clearly expose one.',
+          ].join('\n'),
         },
-        timeout: 15000,
-      }
-    );
+        {
+          role: 'user',
+          content: context,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 320,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: AI_TIMEOUT_MS,
+    }
+  );
 
-    const content = response.data.choices[0]?.message?.content?.trim();
-    if (!content) throw new Error('Empty OpenAI response');
-
-    // Parse JSON (handle potential markdown wrapping)
-    const jsonStr = content.replace(/```json\n?|\n?```/g, '').trim();
-    const parsed = JSON.parse(jsonStr);
-
-    return {
-      title: parsed.title || '',
-      priceText: parsed.price?.toString() || '',
-      brand: parsed.brand || '',
-      category: parsed.category || '',
-      image: parsed.image || '',
-      rating: '',
-      platform: parsed.platform || 'Web',
-      price: parsed.price || null,
-      currency: parsed.currency || 'INR',
-    };
-  } catch (error) {
-    logger.error('OpenAI extraction failed', { error: error.message });
-    throw error; // Rethrow to let the caller handle it (e.g., try Gemini)
+  const content = response.data?.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error('OpenAI returned an empty response');
   }
+
+  const parsed = JSON.parse(content.replace(/```json\n?|\n?```/g, '').trim());
+
+  return {
+    title: safeText(parsed.title),
+    price: parsed.price == null ? 0 : cleanPrice(parsed.price),
+    priceText: parsed.price == null ? '' : safeText(parsed.price),
+    currency: safeText(parsed.currency) || detectCurrency('', url),
+    brand: safeText(parsed.brand),
+    category: safeText(parsed.category),
+    image: safeText(parsed.image),
+    rating: '',
+    platform: safeText(parsed.platform),
+  };
 };
 
-// ─── Gemini Extraction (Alternative fallback) ───────────────────────────
-const extractWithGemini = async (url, partialHTML = '') => {
+const extractWithGemini = async (url, partialHTML = '', extraction = null) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('Gemini API key is not configured.');
+    throw new Error('Gemini key not configured');
   }
 
-  // Build context
-  let context = `URL: ${url}\n`;
-  if (partialHTML) {
-    const $ = cheerio.load(partialHTML);
-    context += `Page Title: ${$('title').text().trim()}\n`;
-    context += `H1: ${$('h1').first().text().trim()}\n`;
-  }
+  const prompt = buildAIContext(url, extraction, partialHTML);
 
-  logger.info('Using Gemini for URL extraction', { url });
-
-  const prompt = `You are a product data extraction assistant. Given a URL and optional page metadata, extract product information. You must respond with ONLY valid JSON, no markdown.
-
-Response format:
-{"title":"product name","price":number_or_null,"currency":"INR","brand":"brand name","category":"electronics|fashion|beauty|home|sports|books|grocery|toys","image":"image_url_or_empty","platform":"site name"}
-
-Rules:
-- Infer product info from the URL structure (e.g. /apple-iphone-15-blue-128-gb/ suggests an Apple iPhone 15 Blue 128GB)
-- price should be a number (no symbols), or null if unknown
-- currency defaults to INR for .in domains, USD for .com
-- Infer brand and category from the product name
-- platform should be the website name (Amazon, Flipkart, Myntra, etc.)
-
-Context:
-${context}`;
-
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json' },
+  const response = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: 'application/json',
       },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }
-    );
+    },
+    {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: AI_TIMEOUT_MS,
+    }
+  );
 
-    const content = response.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!content) throw new Error('Empty Gemini response');
-
-    const parsed = JSON.parse(content);
-
-    return {
-      title: parsed.title || '',
-      priceText: parsed.price?.toString() || '',
-      brand: parsed.brand || '',
-      category: parsed.category || '',
-      image: parsed.image || '',
-      rating: '',
-      platform: parsed.platform || 'Web',
-      price: parsed.price || null,
-      currency: parsed.currency || 'INR',
-    };
-  } catch (error) {
-    logger.error('Gemini extraction failed', { error: error.response?.data?.error?.message || error.message });
-    throw new Error('Could not extract product data via Gemini.');
+  const content = response.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  if (!content) {
+    throw new Error('Gemini returned an empty response');
   }
-};
 
-// ─── Price Cleaning ──────────────────────────────────────────────────────────
-const cleanPrice = (priceText) => {
-  if (!priceText) return null;
-  const cleaned = priceText
-    .replace(/[₹$€£]/g, '')
-    .replace(/Rs\.?/gi, '')
-    .replace(/,/g, '')
-    .replace(/\s+/g, '')
-    .replace(/\.00$/, '');
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? null : num;
-};
+  const parsed = JSON.parse(content);
 
-const detectCurrency = (priceText, url) => {
-  if (!priceText) return 'INR';
-  if (priceText.includes('$')) return 'USD';
-  if (priceText.includes('€')) return 'EUR';
-  if (priceText.includes('£')) return 'GBP';
-  if (url.includes('.com') && !url.includes('.in')) return 'USD';
-  return 'INR';
-};
-
-const detectCategory = (title, rawCategory) => {
-  const text = `${title} ${rawCategory}`.toLowerCase();
-  const categoryMap = {
-    electronics: ['phone', 'laptop', 'tablet', 'headphone', 'earphone', 'earbud', 'speaker', 'tv', 'television', 'camera', 'watch', 'smartwatch', 'charger', 'monitor', 'keyboard', 'mouse', 'console', 'gaming', 'iphone', 'samsung', 'pixel', 'macbook', 'ipad', 'airpod', 'kindle'],
-    fashion: ['shirt', 'jeans', 'dress', 'shoes', 'sneaker', 'jacket', 'hoodie', 'kurta', 'saree', 'lehenga', 't-shirt', 'trouser', 'skirt', 'blazer', 'sandal', 'heel', 'boot', 'slipper'],
-    beauty: ['lipstick', 'foundation', 'cream', 'serum', 'shampoo', 'conditioner', 'perfume', 'fragrance', 'sunscreen', 'moisturizer', 'makeup', 'mascara', 'concealer'],
-    home: ['sofa', 'table', 'chair', 'bed', 'mattress', 'pillow', 'curtain', 'lamp', 'rug', 'kitchen', 'mixer', 'blender', 'appliance', 'vacuum'],
-    sports: ['cricket', 'football', 'badminton', 'yoga', 'gym', 'fitness', 'running', 'cycling', 'dumbbell', 'treadmill'],
+  return {
+    title: safeText(parsed.title),
+    price: parsed.price == null ? 0 : cleanPrice(parsed.price),
+    priceText: parsed.price == null ? '' : safeText(parsed.price),
+    currency: safeText(parsed.currency) || detectCurrency('', url),
+    brand: safeText(parsed.brand),
+    category: safeText(parsed.category),
+    image: safeText(parsed.image),
+    rating: '',
+    platform: safeText(parsed.platform),
   };
-  for (const [cat, keywords] of Object.entries(categoryMap)) {
-    if (keywords.some((kw) => text.includes(kw))) return cat;
-  }
-  return rawCategory || '';
 };
 
-// ─── URL Pattern Extraction (guaranteed fallback, no HTTP needed) ────────────
-/**
- * Extracts product info directly from the URL structure.
- * Works because e-commerce sites encode product names in their URL slugs:
- *   Amazon:   /Product-Name-Here/dp/ASIN
- *   Flipkart: /product-name-here/p/itemid
- *   Myntra:   /brand/product-name/id
- */
 const extractFromURL = (url) => {
   const platform = detectPlatform(url);
   const parsed = new URL(url);
@@ -349,171 +760,263 @@ const extractFromURL = (url) => {
   let brand = '';
 
   if (platform === 'amazon') {
-    // Amazon URL: /Product-Name-With-Dashes/dp/B0XXXXX  OR  /dp/B0XXXXX
     const dpIndex = pathParts.indexOf('dp');
     if (dpIndex > 0) {
-      slug = pathParts[dpIndex - 1]; // The part before /dp/ is the product name
-    } else if (pathParts.length > 0) {
-      // No /dp/ pattern — use the longest path segment
-      slug = pathParts.reduce((a, b) => a.length > b.length ? a : b, '');
+      slug = pathParts[dpIndex - 1];
+    } else {
+      slug = pathParts.reduce((longest, current) => (current.length > longest.length ? current : longest), '');
     }
   } else if (platform === 'flipkart') {
-    // Flipkart URL: /product-name-here/p/itmXXXX
     const pIndex = pathParts.indexOf('p');
-    if (pIndex > 0) {
-      slug = pathParts[pIndex - 1];
-    } else if (pathParts.length > 0) {
-      slug = pathParts[0];
-    }
+    slug = pIndex > 0 ? pathParts[pIndex - 1] : pathParts[0] || '';
   } else if (platform === 'myntra') {
-    // Myntra URL: /brand/product-name/id OR /brand/product-name/buy
     if (pathParts.length >= 2) {
       brand = pathParts[0].replace(/-/g, ' ');
       slug = pathParts[1];
-    } else if (pathParts.length === 1) {
-      slug = pathParts[0];
+    } else {
+      slug = pathParts[0] || '';
     }
   } else {
-    // Generic — use the longest path segment
-    slug = pathParts.reduce((a, b) => a.length > b.length ? a : b, '');
+    slug = pathParts.reduce((longest, current) => (current.length > longest.length ? current : longest), '');
   }
 
-  // Convert slug to readable title: "apple-iphone-15-blue-128-gb" → "Apple Iphone 15 Blue 128 Gb"
-  const title = slug
-    .replace(/-/g, ' ')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-    .trim();
+  const title = normalizeWhitespace(
+    safeText(slug)
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\w/g, (char) => char.toUpperCase())
+  );
 
-  // Try to extract brand from first word of title
   if (!brand && title) {
-    const words = title.split(' ');
-    const knownBrands = ['apple', 'samsung', 'sony', 'lg', 'hp', 'dell', 'asus', 'lenovo', 'oneplus', 'xiaomi', 'redmi', 'poco', 'realme', 'oppo', 'vivo', 'nokia', 'motorola', 'google', 'pixel', 'titan', 'casio', 'fossil', 'nike', 'adidas', 'puma', 'reebok', 'levis', 'zara', 'boat', 'jbl', 'bose', 'philips', 'panasonic', 'whirlpool', 'bosch', 'bajaj', 'prestige', 'havells', 'crompton'];
-    const firstWord = words[0].toLowerCase();
-    if (knownBrands.includes(firstWord)) {
-      brand = words[0];
+    const firstWord = title.split(' ')[0].toLowerCase();
+    if (BRAND_HINTS.includes(firstWord)) {
+      brand = title.split(' ')[0];
     }
   }
-
-  const category = detectCategory(title, '');
-  const currency = url.includes('.in') ? 'INR' : 'USD';
-  const platformName = platform === 'amazon' ? 'Amazon' : platform === 'flipkart' ? 'Flipkart' : platform === 'myntra' ? 'Myntra' : 'Web';
 
   return {
     title: title || 'Unknown Product',
-    price: 0, // Can't get price from URL alone
-    currency,
+    price: 0,
+    currency: detectCurrency('', url),
     brand: brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : '',
-    category,
+    category: detectCategory(title, ''),
     image: '',
     rating: '',
-    platform: platformName,
+    platform: getPlatformLabel(platform),
     url,
     urlExtracted: true,
   };
 };
 
-/**
- * Main scraping function — entry point.
- *
- * Strategy:
- * 1. Try HTTP fetch → parse HTML (works for non-protected sites)
- * 2. If HTML extraction fails → try OpenAI (works with valid API key)
- * 3. If all fail → extract from URL pattern (always works, no price)
- */
+const summariseFailureReason = ({ blocked, unavailable, aiErrors }) => {
+  if (unavailable) {
+    return 'This item appears unavailable or out of stock on the source page. Please enter the current price manually.';
+  }
+
+  if (aiErrors.length && blocked) {
+    return 'Source site blocked automated extraction and AI fallback is currently rate-limited. Enter price manually for analysis.';
+  }
+
+  if (blocked) {
+    return 'Source site blocked automated extraction for this request. Enter price manually for analysis.';
+  }
+
+  if (aiErrors.length) {
+    return 'Automatic price extraction could not complete because AI fallback is unavailable. Enter price manually for analysis.';
+  }
+
+  return 'Product identified, but price could not be extracted reliably. Please enter the price manually.';
+};
+
+const toPayload = ({
+  extracted,
+  platform,
+  url,
+  extractionMethod,
+  extractionNote = '',
+  aiExtracted = false,
+  urlExtracted = false,
+}) => ({
+  title: extracted.title || 'Unknown Product',
+  price: extracted.price || 0,
+  currency: extracted.currency || detectCurrency('', url),
+  brand: extracted.brand || '',
+  category: detectCategory(extracted.title, extracted.category),
+  image: extracted.image || '',
+  rating: extracted.rating || '',
+  platform: extracted.platform || getPlatformLabel(platform),
+  url,
+  unavailable: Boolean(extracted.unavailable),
+  availabilityText: extracted.availabilityText || '',
+  extractionMethod,
+  extractionNote,
+  aiExtracted,
+  urlExtracted,
+});
+
 const scrapeProductURL = async (url) => {
   const platform = detectPlatform(url);
   logger.info('Scraping URL', { url, platform });
 
-  // Step 1: Try fetching HTML
-  const html = await fetchHTML(url);
+  const fetchCandidates = await fetchHTMLCandidates(url);
+  const aiErrors = [];
 
-  // Step 2: Try HTML-based extraction if we got content
-  if (html) {
-    const $ = cheerio.load(html);
-    const extracted = extractFromHTML($, platform);
+  let bestExtraction = null;
+  let bestCandidate = null;
+  let bestScore = -Infinity;
 
-    // Filter out error/garbage page titles
-    const junkTitles = ['page not found', '404', 'access denied', 'robot', 'captcha', 'recaptcha', 'blocked', 'forbidden', 'error', 'unavailable', 'sorry'];
-    const titleLower = (extracted.title || '').toLowerCase();
-    const isJunkTitle = junkTitles.some((junk) => titleLower.includes(junk));
-
-    if ((extracted.title && !isJunkTitle) || extracted.priceText) {
-      const price = cleanPrice(extracted.priceText);
-      const currency = detectCurrency(extracted.priceText, url);
-      const category = detectCategory(extracted.title, extracted.category);
-      const brand = extracted.brand?.replace(/Visit the |Store$|'s /gi, '').trim() || '';
-
-      const scraped = {
-        title: extracted.title || 'Unknown Product',
-        price: price || 0,
-        currency,
-        brand,
-        category,
-        image: extracted.image || '',
-        rating: extracted.rating || '',
-        platform: platform === 'amazon' ? 'Amazon' : platform === 'flipkart' ? 'Flipkart' : platform === 'myntra' ? 'Myntra' : 'Web',
-        url,
-      };
-
-      logger.info('HTML extraction successful', { title: scraped.title, price: scraped.price });
-      return scraped;
-    }
-  }
-
-  // Step 3: Try OpenAI fallback
-  try {
-    logger.info('HTML extraction failed, trying OpenAI', { url });
-    const aiResult = await extractWithOpenAI(url, html);
-    const price = aiResult.price || cleanPrice(aiResult.priceText);
-    const currency = aiResult.currency || detectCurrency(aiResult.priceText, url);
-    const category = detectCategory(aiResult.title, aiResult.category);
-
-    logger.info('OpenAI extraction successful', { title: aiResult.title });
-    return {
-      title: aiResult.title || 'Unknown Product',
-      price: price || 0,
-      currency,
-      brand: aiResult.brand || '',
-      category,
-      image: aiResult.image || '',
-      rating: '',
-      platform: aiResult.platform || 'Web',
-      url,
-      aiExtracted: true,
-    };
-  } catch (aiError) {
-    logger.warn('OpenAI fallback failed, trying Gemini', { error: aiError.message });
-    
-    // Step 3.5: Try Gemini fallback
+  for (const candidate of fetchCandidates) {
     try {
-      const geminiResult = await extractWithGemini(url, html);
-      const price = geminiResult.price || cleanPrice(geminiResult.priceText);
-      const currency = geminiResult.currency || detectCurrency(geminiResult.priceText, url);
-      const category = detectCategory(geminiResult.title, geminiResult.category);
+      const $ = cheerio.load(candidate.html);
+      const extracted = extractFromHTML($, platform, candidate.html, url);
+      const score = scoreExtraction(extracted, candidate);
 
-      logger.info('Gemini extraction successful', { title: geminiResult.title });
-      return {
-        title: geminiResult.title || 'Unknown Product',
-        price: price || 0,
-        currency,
-        brand: geminiResult.brand || '',
-        category,
-        image: geminiResult.image || '',
-        rating: '',
-        platform: geminiResult.platform || 'Web',
-        url,
-        aiExtracted: true,
-      };
-    } catch (geminiError) {
-      logger.warn('Gemini fallback failed, using URL extraction', { error: geminiError.message });
+      if (score > bestScore) {
+        bestScore = score;
+        bestExtraction = extracted;
+        bestCandidate = candidate;
+      }
+
+      if (extracted.price > 0 && !isJunkTitle(extracted.title)) {
+        const payload = toPayload({
+          extracted,
+          platform,
+          url,
+          extractionMethod: `html:${candidate.strategy}`,
+        });
+        logger.info('HTML extraction successful', {
+          strategy: candidate.strategy,
+          title: payload.title,
+          price: payload.price,
+        });
+        return payload;
+      }
+    } catch (error) {
+      logger.warn('Failed to parse fetched HTML candidate', {
+        strategy: candidate.strategy,
+        error: error.message,
+      });
     }
   }
 
-  // Step 4: Final fallback — extract from URL pattern (always works)
-  logger.info('Using URL pattern extraction', { url });
-  return extractFromURL(url);
+  if (bestExtraction?.unavailable) {
+    return toPayload({
+      extracted: bestExtraction,
+      platform,
+      url,
+      extractionMethod: `html:${bestCandidate?.strategy || 'unknown'}`,
+      extractionNote: 'This item appears unavailable or out of stock on the source page. Please enter the current price manually.',
+    });
+  }
+
+  const mirrorText = await fetchViaJinaMirror(url);
+  if (mirrorText) {
+    const mirrored = extractFromMirror(mirrorText, platform, url);
+
+    if (mirrored.price > 0 && !isJunkTitle(mirrored.title)) {
+      logger.info('Mirror extraction successful', { title: mirrored.title, price: mirrored.price });
+      return toPayload({
+        extracted: mirrored,
+        platform,
+        url,
+        extractionMethod: 'mirror:jina',
+      });
+    }
+
+    if (mirrored.unavailable) {
+      return toPayload({
+        extracted: mirrored,
+        platform,
+        url,
+        extractionMethod: 'mirror:jina',
+        extractionNote: 'This item appears unavailable or out of stock on the source page. Please enter the current price manually.',
+      });
+    }
+
+    if (!bestExtraction || scoreExtraction(mirrored, { likelyBlocked: false, status: 200 }) > bestScore) {
+      bestExtraction = mirrored;
+    }
+  }
+
+  const aiContextExtraction = bestExtraction && !isJunkTitle(bestExtraction.title) ? bestExtraction : null;
+  const partialHTML = bestCandidate?.html || '';
+
+  try {
+    const openaiResult = await extractWithOpenAI(url, partialHTML, aiContextExtraction);
+    if (openaiResult.title || openaiResult.price > 0) {
+      logger.info('OpenAI extraction successful', { title: openaiResult.title, price: openaiResult.price || 0 });
+      return toPayload({
+        extracted: {
+          ...openaiResult,
+          unavailable: false,
+          availabilityText: '',
+          currency: openaiResult.currency || detectCurrency(openaiResult.priceText, url),
+        },
+        platform,
+        url,
+        extractionMethod: 'ai:openai',
+        aiExtracted: true,
+      });
+    }
+  } catch (error) {
+    const reason = makeProviderError('openai', error);
+    aiErrors.push(reason);
+    logger.warn('OpenAI extraction failed', { error: error.message, reason });
+  }
+
+  try {
+    const geminiResult = await extractWithGemini(url, partialHTML, aiContextExtraction);
+    if (geminiResult.title || geminiResult.price > 0) {
+      logger.info('Gemini extraction successful', { title: geminiResult.title, price: geminiResult.price || 0 });
+      return toPayload({
+        extracted: {
+          ...geminiResult,
+          unavailable: false,
+          availabilityText: '',
+          currency: geminiResult.currency || detectCurrency(geminiResult.priceText, url),
+        },
+        platform,
+        url,
+        extractionMethod: 'ai:gemini',
+        aiExtracted: true,
+      });
+    }
+  } catch (error) {
+    const reason = makeProviderError('gemini', error);
+    aiErrors.push(reason);
+    logger.warn('Gemini extraction failed', { error: error.message, reason });
+  }
+
+  const fallback = extractFromURL(url);
+  const extractionNote = summariseFailureReason({
+    blocked: fetchCandidates.some((candidate) => candidate.likelyBlocked),
+    unavailable: bestExtraction?.unavailable || false,
+    aiErrors,
+  });
+
+  logger.info('Using URL fallback extraction', {
+    url,
+    reason: extractionNote,
+    aiErrors,
+  });
+
+  return {
+    ...fallback,
+    extractionMethod: 'url-pattern',
+    extractionNote,
+    aiErrors,
+  };
 };
 
-module.exports = { scrapeProductURL, detectPlatform };
-
+module.exports = {
+  scrapeProductURL,
+  detectPlatform,
+  __test__: {
+    cleanPrice,
+    detectCurrency,
+    detectCategory,
+    extractFromURL,
+    isLikelyBlockedPage,
+    isLikelyUnavailable,
+    summariseFailureReason,
+  },
+};

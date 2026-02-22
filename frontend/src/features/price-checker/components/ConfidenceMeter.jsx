@@ -4,20 +4,21 @@ import './ConfidenceMeter.css';
 
 function ConfidenceMeter({ score, breakdown }) {
   const [animatedScore, setAnimatedScore] = useState(0);
+  const normalizedScore = Number(score || 0);
 
   useEffect(() => {
-    const timer = setTimeout(() => setAnimatedScore(score), 100);
+    const timer = setTimeout(() => setAnimatedScore(normalizedScore), 100);
     return () => clearTimeout(timer);
-  }, [score]);
+  }, [normalizedScore]);
 
   const circumference = 2 * Math.PI * 54;
   const offset = circumference - (animatedScore / 100) * circumference;
-  const confidenceLabel = getConfidenceLabel(score);
+  const confidenceLabel = getConfidenceLabel(normalizedScore);
 
   const getColor = () => {
-    if (score >= 80) return '#22c55e';
-    if (score >= 60) return '#f59e0b';
-    if (score >= 40) return '#f97316';
+    if (normalizedScore >= 80) return '#22c55e';
+    if (normalizedScore >= 60) return '#f59e0b';
+    if (normalizedScore >= 40) return '#f97316';
     return '#ef4444';
   };
 
@@ -27,7 +28,7 @@ function ConfidenceMeter({ score, breakdown }) {
 
       <div className="confidence-meter__gauge">
         <svg viewBox="0 0 120 120" className="confidence-meter__svg">
-          <circle cx="60" cy="60" r="54" fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="8" />
+          <circle cx="60" cy="60" r="54" fill="none" stroke="var(--border-subtle)" strokeWidth="8" />
           <circle
             cx="60" cy="60" r="54"
             fill="none"

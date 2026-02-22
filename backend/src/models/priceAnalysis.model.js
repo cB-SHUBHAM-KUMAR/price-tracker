@@ -6,6 +6,11 @@ const mongoose = require('mongoose');
 
 const priceAnalysisSchema = new mongoose.Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+    },
     type: {
       type: String,
       enum: ['product', 'hotel', 'flight'],
@@ -51,5 +56,6 @@ const priceAnalysisSchema = new mongoose.Schema(
 // ─── Indexes ─────────────────────────────────────────────────────────────────
 priceAnalysisSchema.index({ createdAt: -1 });
 priceAnalysisSchema.index({ type: 1, pricePosition: 1 });
+priceAnalysisSchema.index({ userId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('PriceAnalysis', priceAnalysisSchema);

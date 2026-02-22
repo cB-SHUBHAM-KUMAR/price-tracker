@@ -14,6 +14,14 @@ class PriceAnalysisRepository extends BaseRepository {
     return this.findAll({ type }, options);
   }
 
+  async findByUser(userId, options = {}) {
+    return this.findAll({ userId }, options);
+  }
+
+  async findByIdForUser(id, userId) {
+    return this.model.findOne({ _id: id, userId });
+  }
+
   async findRecent(limit = 20) {
     return this.model.find().sort('-createdAt').limit(limit);
   }

@@ -25,7 +25,7 @@ const validate = (schema, source = 'body') => {
     }
 
     req[source] = value; // replace with sanitised data
-    next();
+    return next();
   };
 };
 

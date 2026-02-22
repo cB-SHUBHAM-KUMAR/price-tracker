@@ -8,21 +8,22 @@ function PriceTimeline({ timeline, type }) {
   const min = Math.min(...monthlyTrend);
   const currentMonth = new Date().getMonth();
 
-  const getBarColor = (value, index) => {
+  const getBarColor = (index) => {
     const monthName = [
-      'January','February','March','April','May','June',
-      'July','August','September','October','November','December'
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
     ][index];
+
     if (bestMonths.includes(monthName)) return 'var(--timeline-best, #22c55e)';
     if (peakMonths.includes(monthName)) return 'var(--timeline-peak, #ef4444)';
-    return 'var(--timeline-normal, rgba(99, 102, 241, 0.6))';
+    return 'var(--timeline-normal, rgba(99, 102, 241, 0.64))';
   };
 
-  const typeLabel = type === 'flight' ? '✈️ Flights' : type === 'hotel' ? '🏨 Hotels' : '📦 Products';
+  const typeLabel = type === 'flight' ? 'Flights' : type === 'hotel' ? 'Hotels' : 'Products';
 
   return (
     <div className="price-timeline">
-      <h4 className="price-timeline__title">📅 Best Time to Buy — {typeLabel}</h4>
+      <h4 className="price-timeline__title">Best Time to Buy - {typeLabel}</h4>
 
       <div className="price-timeline__chart">
         {monthlyTrend.map((value, i) => {
@@ -35,9 +36,9 @@ function PriceTimeline({ timeline, type }) {
                 className="timeline-bar"
                 style={{
                   height: `${height}%`,
-                  background: getBarColor(value, i),
+                  background: getBarColor(i),
                 }}
-                title={`${monthLabels[i]}: Price Index ${value}`}
+                title={`${monthLabels[i]}: Price index ${value}`}
               />
               <span className="timeline-bar__label">{monthLabels[i]}</span>
               {isCurrent && <span className="timeline-bar__now">NOW</span>}
@@ -59,7 +60,7 @@ function PriceTimeline({ timeline, type }) {
       </div>
 
       <div className="price-timeline__tips">
-        <h5 className="tips__title">💡 Buying Tips</h5>
+        <h5 className="tips__title">Buying Tips</h5>
         <ul className="tips__list">
           {tips.slice(0, 3).map((tip, i) => (
             <li key={i} className="tips__item">{tip}</li>

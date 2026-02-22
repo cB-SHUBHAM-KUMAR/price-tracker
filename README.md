@@ -57,6 +57,19 @@ Make sure you have Node.js (v18+) and MongoDB installed locally, or a free Mongo
 
 4. You can now view the application at `http://localhost:5173/` (or the port specified by Vite).
 
+## Local Test Credentials
+
+If you run the backend seed script (`cd backend && npm run seed`), the following users are created:
+
+- User account
+  - Email: `user@example.com`
+  - Password: `User1234!`
+- Admin account
+  - Email: `admin@example.com`
+  - Password: `Admin123!`
+
+Note: In non-production environments, `npm run seed` clears existing users, analyses, and alerts before inserting seed data.
+
 ## 🗂 Project Structure
 - **/frontend**: React web application containing the Top Navbar layout, responsive grid structures, Redux store for alerts and user states, and pure CSS modular stylesheets.
 - **/backend**: Express APIs parsing AI heuristic endpoints, historical database logs, authentication routes, and internal price scraping handlers.

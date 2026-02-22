@@ -32,11 +32,15 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    // Auto-redirect on 401 (token expired)
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Handle unauthorized responses without forcing a global redirect.
+    // Pages can decide whether to show inline auth prompts.
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true;
       localStorage.removeItem('accessToken');
-      window.location.href = '/login';
+
+      if (originalRequest.redirectOnAuthFailure) {
+        window.location.href = '/login';
+      }
     }
 
     return Promise.reject(error);

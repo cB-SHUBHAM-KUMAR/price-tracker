@@ -30,6 +30,15 @@
   animation: fadeInUp 0.45s ease-out;
 }
 
+.page-error {
+  margin-bottom: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  border-radius: var(--radius-md);
+  background: rgba(248, 81, 73, 0.08);
+  color: var(--color-danger);
+}
+
 .history-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

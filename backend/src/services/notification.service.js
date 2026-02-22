@@ -22,7 +22,7 @@ class NotificationService {
     const payload = this._buildPayload(alert, analysisResult);
 
     this._logNotification(payload);
-    await this._sendEmail(payload);
+    return this._sendEmail(payload);
   }
 
   _formatMoney(value, currency = 'INR') {
@@ -105,14 +105,14 @@ class NotificationService {
       logger.warn('Skipping alert email - no recipient available', {
         alertId: payload.alertId,
       });
-      return;
+      return { delivered: false, reason: 'missing-recipient' };
     }
 
     if (!this.sesClient || !this.sesFromEmail) {
       logger.warn('Skipping alert email - SES is not configured', {
         alertId: payload.alertId,
       });
-      return;
+      return { delivered: false, reason: 'ses-not-configured' };
     }
 
     try {
@@ -148,11 +148,17 @@ class NotificationService {
         messageId: response.MessageId,
         toEmail: payload.toEmail,
       });
+      return {
+        delivered: true,
+        provider: 'ses',
+        messageId: response.MessageId,
+      };
     } catch (error) {
       logger.error('SES alert email failed', {
         alertId: payload.alertId,
         error: error.message,
       });
+      return { delivered: false, reason: 'ses-send-failed', error: error.message };
     }
   }
 }

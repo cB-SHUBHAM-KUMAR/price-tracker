@@ -22,7 +22,7 @@ function AlertForm({ onSubmit, loading }) {
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    if (!form.title.trim() || !form.targetPrice) return;
+    if (!form.title.trim() || !form.targetPrice || !form.trackingUrl.trim()) return;
 
     onSubmit({
       title: form.title.trim(),
@@ -46,7 +46,7 @@ function AlertForm({ onSubmit, loading }) {
     <form className="alert-form" onSubmit={handleSubmit}>
       <h2 className="alert-form__title">Create alert</h2>
       <p className="alert-form__subtitle">
-        Add a tracking URL to enable automatic scheduler checks and notifications.
+        Add a tracking URL so the scheduler can monitor live price changes.
       </p>
 
       <div className="alert-form__row">
@@ -142,13 +142,14 @@ function AlertForm({ onSubmit, loading }) {
       </div>
 
       <div className="alert-form__group">
-        <label htmlFor="alert-url">Tracking URL (optional)</label>
+        <label htmlFor="alert-url">Tracking URL *</label>
         <input
           id="alert-url"
           type="url"
           placeholder="https://www.amazon.in/dp/..."
           value={form.trackingUrl}
           onChange={(event) => update('trackingUrl', event.target.value)}
+          required
         />
       </div>
 

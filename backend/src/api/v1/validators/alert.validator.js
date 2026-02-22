@@ -18,7 +18,7 @@ const createAlertSchema = Joi.object({
     route: Joi.string().trim().allow('').max(200),
   }).default({}),
   notifyEmail: Joi.string().email().allow(''),
-  trackingUrl: Joi.string().trim().uri().allow(''),
+  trackingUrl: Joi.string().trim().uri().required(),
 });
 
 const updateAlertSchema = Joi.object({
