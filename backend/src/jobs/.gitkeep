@@ -1,0 +1,2 @@
+// Background jobs directory — place cron/queue job definitions here
+// Example: cleanupExpiredTokens.job.js, sendDailyReports.job.js

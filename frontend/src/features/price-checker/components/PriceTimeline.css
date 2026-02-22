@@ -1,0 +1,126 @@
+.price-timeline {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  padding: 1.5rem;
+  margin-top: 1rem;
+}
+
+.price-timeline__title {
+  font-size: 1rem;
+  color: var(--text-primary, #e2e8f0);
+  margin: 0 0 1rem;
+}
+
+.price-timeline__chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 120px;
+  padding: 0 4px;
+}
+
+.timeline-bar-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+  position: relative;
+}
+
+.timeline-bar-wrapper--current {
+  transform: scale(1.05);
+}
+
+.timeline-bar__value {
+  font-size: 0.6rem;
+  color: rgba(255,255,255,0.5);
+  margin-bottom: 2px;
+}
+
+.timeline-bar {
+  width: 100%;
+  min-width: 16px;
+  max-width: 36px;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.timeline-bar__label {
+  font-size: 0.6rem;
+  color: rgba(255,255,255,0.5);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.timeline-bar__now {
+  position: absolute;
+  bottom: -18px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #818cf8;
+  letter-spacing: 1px;
+}
+
+.price-timeline__legend {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.timeline-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: rgba(255,255,255,0.6);
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.timeline-dot--best { background: #22c55e; }
+.timeline-dot--peak { background: #ef4444; }
+.timeline-dot--normal { background: rgba(99, 102, 241, 0.6); }
+
+.price-timeline__tips {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.tips__title {
+  font-size: 0.85rem;
+  color: var(--text-primary, #e2e8f0);
+  margin: 0 0 0.5rem;
+}
+
+.tips__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.tips__item {
+  font-size: 0.78rem;
+  color: rgba(255,255,255,0.6);
+  padding-left: 1rem;
+  position: relative;
+}
+
+.tips__item::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  color: #818cf8;
+}

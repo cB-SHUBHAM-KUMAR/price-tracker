@@ -1,0 +1,109 @@
+/* ─── Theme Variables (Refined SaaS Aesthetic) ───────────────────────── */
+
+/* Dark Mode 
+   Pure black background, subtle grays, high contrast white text. */
+:root {
+  /* Backgrounds */
+  --bg-primary: #09090b; /* Slightly lighter deep gray for page */
+  --bg-secondary: #121214;
+  --bg-sidebar: #000000; /* Pure black for sidebar to anchor the UI */
+  --bg-card: #121214;
+  --bg-card-hover: #18181b;
+  --bg-input: #121214;
+  --bg-input-focus: #18181b;
+
+  /* Borders - Soft translucency instead of harsh hex */
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-medium: rgba(255, 255, 255, 0.15);
+  --border-accent: rgba(255, 255, 255, 0.25);
+  --border-strong: rgba(255, 255, 255, 0.5);
+
+  /* Colors - Monochrome focus with subtle accents */
+  --accent-primary: #FFFFFF;
+  --accent-gradient: #FFFFFF;
+  --accent-gradient-vivid: #FFFFFF;
+  --color-primary-alpha: rgba(255, 255, 255, 0.15);
+  --text-on-accent: #000000;
+
+  /* Semantic Colors - Slightly muted for dark mode */
+  --color-success: #3fb950;
+  --color-danger: #f85149;
+  --color-warning: #d29922;
+  --color-info: #58a6ff;
+
+  /* Typography */
+  --text-primary: #EDEDED;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+  --text-accent: #FFFFFF;
+
+  /* Shadows - Minimalist but present */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 20px rgba(255, 255, 255, 0.05);
+  --shadow-elevated: 0 20px 40px -10px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255,255,255,0.05);
+
+  /* Orbs - completely disabled for structural look */
+  --orb-opacity: 0;
+  
+  /* Platform Colors */
+  --color-amazon: #da8a23;
+  --color-flipkart: #1a6ec7;
+  --color-myntra: #cc1d56;
+}
+
+/* Light Mode 
+   Clean, Apple-like light theme. High contrast. */
+[data-theme='light'] {
+  /* Backgrounds */
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #FAFAFA;
+  --bg-sidebar: #FAFAFA;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F4F4F5;
+  --bg-input: #FFFFFF;
+  --bg-input-focus: #FFFFFF;
+
+  /* Borders */
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-medium: rgba(0, 0, 0, 0.12);
+  --border-accent: rgba(0, 0, 0, 0.2);
+  --border-strong: rgba(0, 0, 0, 0.4);
+
+  /* Colors */
+  --accent-primary: #000000;
+  --accent-gradient: #000000;
+  --accent-gradient-vivid: #000000;
+  --color-primary-alpha: rgba(0, 0, 0, 0.05);
+  --text-on-accent: #FFFFFF;
+
+  /* Semantic Colors */
+  --color-success: #1a7f37;
+  --color-danger: #cf222e;
+  --color-warning: #9a6700;
+  --color-info: #0969da;
+
+  /* Typography */
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --text-muted: #9CA3AF;
+  --text-accent: #000000;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+  --shadow-glow: none;
+  --shadow-elevated: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+
+  /* Orbs */
+  --orb-opacity: 0;
+}
+
+/* Legacy Aliases */
+:root {
+  --color-bg: var(--bg-primary);
+  --color-card-bg: var(--bg-card);
+  --color-border: var(--border-medium);
+  --color-text: var(--text-primary);
+  --color-text-muted: var(--text-muted);
+}
